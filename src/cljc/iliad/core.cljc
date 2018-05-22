@@ -1,96 +1,124 @@
-(ns iliad.core
-  (:require [clojure.spec.alpha :as spec]))
+(ns iliad.core2
+  (:require [clojure.spec.alpha :as spec]
+            [clojure.string :as str]
+            [clojure.set :as set]))
+
 
 (spec/def ::input-element
   (spec/keys :req [::id ::type ::prompt]
              :opt [::children]))
 
+(spec/def ::ns-kw (spec/and keyword? #(namespace %)))
+
 (spec/def ::id keyword?)
-(spec/def ::type (spec/and keyword? namespace))
+(spec/def ::type ::ns-kw)
 (spec/def ::prompt string?)
-(spec/def ::children (spec/coll-of (spec/or :string string? :element ::input-element)))
+(spec/def ::children (spec/nilable
+                      (spec/or :strings (spec/coll-of (spec/or :label string?
+                                                               :label+value (spec/tuple string? string?)))
+                               :elements (spec/coll-of ::input-element))))
 
 ;;Basic types: single-input (with text, num), title, group, multi-input
+;; Actually, Non-input types such as titles should be input to the whole form
+;; rendering function, no need to include them in the element list, eh?
+
+(comment
+  {:extends ;;previous type
+   :coerce ;; fn that coerces from a raw value, returns value or invalid kw
+   :validate ;; coll of fns that assume a coerced value and return either the value or an invalid-kw
+   :error-msg ;; coll of validation errors and fns that take invalid value and map of options to return an error message
+   :render ;; fn that takes an element and map of options, produces a string or data to render
+   :el-spec ;; keys required/optional in an element def of this type
+   }
+
+  (defelement ::text
+      :extends ::single-input
+      :coercion str)
+
+  (defelement ::num
+      :extends ::single-input
+      :coerce #(try (Double/parseDouble %1) (catch Throwable _ :invalid/NaN))
+      :validate [#(interval-val %1 %2)]
+      :error-msg [:invalid/NaN #(str %1 " is not a valid number.")]
+      :render #(str %1)
+      :el-spec [:opt [::max-val ::min-val]]))
+
+
+(defn dispatch-on-ks
+  [& ks]
+  (fn [_ m] ((apply juxt ks) m)))
 
 
 ;;----------------------------------------
-;; Basic multimethods for using form elements.
+;; Basic multimethods for writing/extendings elements/contexts.
+
+(defmulti coerce (dispatch-on-ks ::type ::context))
 
 
-(defmulti coerce
-  "Coerce an input into a different type/form. Performed before validation.
-  Should throw ex-info on failure.
-  Values should only coerce to nil to indicate absence."
-  (fn [_ element context]
-    [(::type element) context]))
+(defmulti validate (fn [_ opts] (::type opts)))
 
 
 (defn invalid-result?
-  "Helper function to determine whether the result of `validate` is invalid."
   [x]
-  (and (keyword? x)
-       (= "invalid" (namespace x))))
-
-(defmulti validate
-  "Validates an input, performed after coercion.
-  Must be called on a coerced value, because it assumes data is in the form in
-  which it will be used by the application (hence it is independent of context).
-  Passes thru value on success, returns a keyword in the `invalid`namespace on
-  failure, e.g. `:invalid/invalid`."
-  (fn [_ element]
-    (::type element)))
+  (let [invalid-kw? #(and (keyword? %)
+                          (= "invalid" (namespace %)))]
+    (if (and (sequential? x) (seq x))
+      (every? invalid-kw? x)
+      (invalid-kw? x))))
 
 
 (defmulti error-msg
-  "Generates an error message appropriate for the context.
-  Called on the uncoerced value of the input."
-  (fn [_ element context]
-    [(::type element) context]))
+  ;; If a map is provided, dispatch on type and context to coerce and validate
+  ;; first. If an error keyword is provided, dispatch on kw. If a seq of
+  ;; keywords is provided, dispatch on the special value ::invalid-seq
+  (fn
+    ([_ opts-or-inv]
+     (cond
+       (map? opts-or-inv)                  ((juxt ::type ::context) opts-or-inv)
+       (keyword? opts-or-inv)              opts-or-inv
+       (and (sequential? opts-or-inv)
+            (every? keyword? opts-or-inv)) ::invalid-seq))
+    ([_ inv opts]
+     (let [{:keys [::type ::context]} opts]
+       (if (sequential? inv)
+         [::invalid-seq type context]
+         [inv type context])))))
 
 
-(defmulti render
-  "Renders an input element for display in the appropriate context."
-  (fn [_ element context]
-    [(::type element) context]))
+(defmulti render (juxt ::type ::context))
 
 
-;;----------------------------------------
-;; Default behaviors
-
-
-(defmethod coerce :default
-  [value _ _]
-  value)
-
-
-(defmethod validate :default
-  [value _ _]
-  value)
-
-
-(defn valid?
-  "Check whether a particular raw input is valid."
-  [v e c]
-  (let [coerced (try (coerce v e c)
-                     (catch #?(:clj Throwable :cljc js/Object) _ :invalid/invalid))]
-    (and (not= :invalid/invalid coerced)
-         (not (invalid-result? (validate coerced e))))))
-
-
-;; Provides a generic error message
 (defmethod error-msg :default
-  [v e c]
-  (if (valid? v e c)
-    ""
-    (let [prompt (::prompt e)]
-      (str "The value entered for \"" prompt "\" is invalid."))))
+  ([v opts-or-inv]
+   (cond
+     (map? opts-or-inv) (let [coerced (coerce v opts-or-inv)
+                             result (cond
+                                      (invalid-result? coerced) coerced
+                                      :else (validate coerced opts-or-inv))
+                             valid? (not (invalid-result? result))]
+                         (if (not valid?)
+                           (error-msg v result)))
+
+     (keyword? opts-or-inv) (error-msg v :invalid/invalid)))
+  ([v inv opts]
+   (error-msg v inv)))
 
 
-;; Throw an exception when calling render when not defined for the type/context.
-(defmethod render :default
-  [value element context]
-  (let [t (::type element)]
-    (throw (ex-info (str "No method to render element type " t " in context " context)))))
+(defmethod error-msg :invalid/invalid
+  [v kw]
+  "The value entered is not valid.")
+
+
+(defmethod error-msg :invalid/required
+  [v kw]
+  "This field is required.")
+
+
+(defmethod error-msg ::invalid-seq
+  ([v kws]
+   (mapv (partial error-msg v) kws))
+  ([v kws opts]
+   (mapv #(error-msg v % opts) kws)))
 
 
 ;;----------------------------------------
@@ -99,65 +127,97 @@
 ;; context.
 
 
-(defmulti method-def first)
-
-(defmethod method-def 'coerce [_]
-  (spec/cat :method-name #{'coerce}
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
-
-(defmethod method-def 'error-msg [_]
-  (spec/cat :method-name #{'error-msg}
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
-
-(defmethod method-def 'validate [_]
-  (spec/cat :method-name #{'validate}
-            :argv (spec/coll-of symbol? :kind vector? :count 2)
-            :body any?))
-
-(defmethod method-def 'render [_]
-  (spec/cat :method-name #{'render}
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
+;; Do we want to expose this or just return the value/errors?
+(spec/def ::validation-result
+  (spec/keys :req-un [::errors ::valid? ::value]))
 
 
-;; TODO: Seems like a hack, is this needed?
-(def ^:private this-ns *ns*)
-(defn method-helper
-  [type context {:keys [method-name argv body]}]
-  (let [d-val (case method-name
-                coerce [type context]
-                validate type
-                error-msg [type context]
-                render [type context])]
-    `(defmethod ~(symbol (str this-ns) (name method-name)) ~d-val
-       ~argv
-       ~body)))
+(defn merge-val-results
+  [res new]
+  (let [is-valid (not (invalid-result? new))]
+    (-> res
+        (update :errors #(if is-valid % (conj % new)))
+        (update :valid? (fnil #(and %1 is-valid) true)))))
 
 
-(spec/def ::defelement-args
-  (spec/cat
-   :name (spec/and keyword? namespace)
-   :ex-sym #{'extends}
-   :parent (spec/and keyword? namespace)
-   :doc? (spec/? string?)
-   :defs (spec/* (spec/multi-spec method-def ::method-def))))
+(defn lift-validation-fn
+  [f]
+  (fn [res opts]
+    (merge-val-results res (f (:value res) opts))))
 
+
+(defn do-validations
+  [fs v opts]
+  (let [{:keys [value errors valid?]} (reduce #(%2 %1 opts)
+                                              {:value v}
+                                              (map lift-validation-fn fs))]
+    (if valid?
+      value
+      errors)))
+
+
+(defn pred->validator
+  [f invalid-kw]
+  (fn [x]
+    (if (f x)
+      x
+      invalid-kw)))
+
+
+(comment
+  (def num-vals [(pred->validator #(= 0 (mod % 3)) :invalid/not-div-3)
+                 (pred->validator #(< 1 %) :invalid/less-than-1)
+                 (pred->validator odd? :invalid/too-even)])
+
+  (do
+    (println '(do-validations num-vals 9))
+    (println (do-validations num-vals 9))
+
+    (println '(do-validations num-vals 5))
+    (println (do-validations num-vals 5))
+
+    (println '(do-validations num-vals -8))
+    (println (do-validations num-vals -8))))
+
+
+#_(spec/def ::defelement-args
+  (spec/map-of #{:extends :coerce :validate :error-msg :render :el-spec} any?))
+
+
+(defn method-gen
+  [k v ename context]
+  (case k
+    :coerce `(defmethod coerce [~ename ~context]
+               [v# opts#]
+               (~v v# opts#))
+    :validate `(defmethod validate ~ename
+                 [v# opts#]
+                 (do-validations ~v v# opts#))
+    :error-msg `(defmethod error-msg [~ename ~context]
+                  [v# opts#]
+                  (~v v# opts#))
+    :render `(defmethod render [~ename ~context]
+               [opts#]
+               (~v opts#))
+    nil))
+
+
+;; TODO: Make this spec better
 (spec/fdef defelement
-           :args ::defelement-args)
+           :args (spec/cat :name ::ns-kw
+                           :doc? (spec/? string?)
+                           :defelement-args (spec/* (spec/cat :kw keyword? :val any?))))
 
 (defmacro defelement
-  [& args]
-  (let [{:keys [name parent doc? defs]} (spec/conform ::defelement-args args)
-        d-val [name ::default-context]]
+  [ename & [doc? & kvs]]
+  (let [kvs (if (string? doc?) kvs (cons doc? kvs))
+        {:keys [extends coerce validate error-msg render el-spec] :as args} (apply array-map kvs)]
     `(do
-       (derive ~name ~parent)
-       ;; TODO: Had some trouble spec-ing the spec def. Fix this above.
-       #_~(when spec
-          `(spec/def ~name (spec/merge ::input-element ~spec-form)))
-       ~@(for [form defs]
-           (method-helper name ::default-context form)))))
+       (derive ~ename ~(or extends ::single-input))
+       (spec/def ~ename ~(or el-spec extends))
+       ~@(for [[k v] args
+               :let [form (method-gen k v ename ::default-context)]
+               :when form] form))))
 
 
 ;;----------------------------------------
@@ -167,45 +227,30 @@
 ;; context.
 
 
-(defmulti context-method-def first)
-
-(defmethod context-method-def 'coerce [_]
-  (spec/cat :method-name #{'coerce}
-            :type (spec/and keyword? namespace)
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
-
-(defmethod context-method-def 'error-msg [_]
-  (spec/cat :method-name #{'error-msg}
-            :type (spec/and keyword? namespace)
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
-
-(defmethod context-method-def 'render [_]
-  (spec/cat :method-name #{'render}
-            :type (spec/and keyword? namespace)
-            :argv (spec/coll-of symbol? :kind vector? :count 3)
-            :body any?))
-
-
-(spec/def ::defcontext-args
-  (spec/cat
-   :name (spec/and keyword? namespace)
-   :ex-sym #{'extends}
-   :parent (spec/and keyword? namespace)
-   :doc? (spec/? string?)
-   :body (spec/* (spec/multi-spec context-method-def ::context-method-def))))
-
+;; TODO: Make this spec better
 (spec/fdef defcontext
-           :args ::defcontext-args)
+           :args (spec/cat :name ::ns-kw
+                           :doc? (spec/? string?)
+                           :extends (spec/cat :kw #{:extends} :parent ::ns-kw)
+                           :defcontext-args (spec/* (spec/cat :kw keyword?
+                                                              :vals (spec/spec (spec/* (spec/cat :el ::ns-kw :val any?)))))))
 
 (defmacro defcontext
-  [& args]
-  (let [{:keys [name parent doc? body]} (spec/conform ::defcontext-args args)]
+  [cname & [doc? & kvs]]
+  (let [kvs (if (string? doc?) kvs (cons doc? kvs))
+        {:keys [extends coerce error-msg render] :as args} (apply array-map kvs)]
     `(do
-       (derive ~name ~parent)
-       ~@(for [{:keys [type] :as form} body]
-           (method-helper type name form)))))
+       (derive ~cname ~(or extends ::default-context))
+       ;; TODO: Can we do better than the stupid hack below?
+       ~@(for [[k vs] (dissoc args :extends)
+               [ename v] (partition 2 vs)
+               :let [form (method-gen k v ename cname)]
+               :when form] form))))
+
+(comment
+  (defcontext ::html-form
+    :coerce [::num (fn [v _] (try (Double/parseDouble v) (catch Throwable _ :invalid/NaN)))
+             ::text (fn [v _] (if (clojure.string/blank? v) nil (clojure.string/trim v)))]))
 
 
 ;;----------------------------------------
@@ -214,12 +259,16 @@
 
 
 (spec/def ::element-data-seq
-  (spec/cat ::id ::id
-            ::type ::type
-            ::prompt ::prompt
-            ::map (spec/map-of keyword? any?)
-            ;; TODO: This should either be a seq of strings or data seqs, not both
-            ::children (spec/* (spec/or :string string? :element ::element-data-seq))))
+  (spec/and
+   vector?
+   (spec/cat ::id ::id
+             ::type ::type
+             ::prompt ::prompt
+             ::map (spec/? (spec/map-of keyword? any?))
+             ;; TODO: Should multiple nestings be allowed?
+             ::children (spec/? (spec/or :strings (spec/* (spec/alt :label string?
+                                                                    :label+value (spec/tuple string? string?)))
+                                         :elements (spec/* ::element-data-seq))))))
 
 
 (comment
@@ -231,12 +280,23 @@
                                                :num-low 0
                                                :num-high 99}]))
 
+(defn ^:private update-when
+  "Only updates a map when the key is present"
+  [m k f & args]
+  (if (k m)
+    (apply update m k f args)
+    m))
 
 (defn parse-element-data
   [data-seq]
   (if (spec/valid? ::element-data-seq data-seq)
     (let [{:keys [::map ::type] :as conformed} (spec/conform ::element-data-seq data-seq)
           flat-map (-> conformed
+                       ;; NOTE: This results in all parsed element defs containing ::children
+                       (update-when ::children #(case (first %)
+                                                  nil nil
+                                                  :strings (mapv second (second %))
+                                                  :elements (mapv second %)))
                        (merge map)
                        (dissoc ::map))]
       (cond
@@ -256,6 +316,25 @@
                      :explain-data (spec/explain-data ::element-data-seq data-seq)}))))
 
 
+(defmacro defform
+  [name {:keys [form-inputs required-inputs]}]
+  `(def ~name
+     {:form-inputs (mapv parse-element-data ~form-inputs)
+      :required-inputs ~required-inputs}))
+
+
+;;----------------------------------------
+;; Form data coercion and validation
+
+
+(defn coerce->validate
+  [v opts]
+  (let [coerced (coerce v opts)]
+    (if (invalid-result? coerced)
+      coerced
+      (validate coerced opts))))
+
+
 ;; Required inputs are specified separately, as they may be required or not
 ;; in different situations.
 (spec/def ::form-def
@@ -267,174 +346,130 @@
 
 (spec/def ::required-inputs (spec/coll-of ::id))
 
+(spec/def :form/input (spec/map-of keyword? any?))
+
+(spec/def :form/result (spec/map-of keyword? any?))
+
+(spec/def :form/error-data (spec/or :single invalid-result?
+                                    :multi  (spec/coll-of invalid-result?)))
+
+(spec/def :form/error-msg (spec/or :single string?
+                                   :multi  (spec/coll-of string?)))
+
+(spec/def :form/valid? boolean?)
+
+(spec/def :form/def ::form-def)
 
 (spec/fdef process-form
            :args (spec/cat
                   :input (spec/map-of :keyword? any?)
                   :form-def ::form-def
-                  :context keyword?
-                  :opts (spec/alt :post-fn fn?
-                                  :pre-fn fn?))
+                  :context keyword?)
 
-           :ret (spec/keys :req-un [:form/input :form/result :form/error-data :form/error-msgs
+           :ret (spec/keys :req-un [:form/input :form/result :form/error-data :form/error-msg
                                     :form/valid? :form/def]))
 
-(defn map-form-fn
-  "Maps coerce, validate, or error-msg over a form map."
-  ([f form-map element-map]
-   (map (fn [[k v]]
-          (f v (get element-map k)))
-        form-map))
-  ([f form-map element-map context]
-   (map (fn [[k v]]
-          (f v (get element-map k) context))
-        form-map)))
-
-(defn remove-empty-keys
-  [m]
-  (reduce (fn [ma [k v]] (if (nil? v) ma (assoc ma k v)))))
-
-(defn merge-keys-nil
-  [m ks]
-  (merge (zipmap ks (repeat nil)) m))
-
-(defn validate-pass-nil
- "Helper function to avoid validating nil values."
- [v e]
- (if (nil? v) nil (validate v e)))
-
+;; This is slow. But too slow?
 (defn process-form
-  [input form-def context & {:keys [post-val-fn]}]
+  [input form-def context]
   (let [input-defs (:form-inputs form-def)
-        required-inputs (:required-inputs form-def)
-        ;; Create a map of elements by id
-        element-map (reduce (fn [m input-def]
-                              ;; Skip elements that are titles
-                              ;; TODO: Deal with nexted titles?
-                              (if (isa? (::type input-def) ::title)
-                                m
-                                (assoc m (::id input-def) input-def)))
-                            {} input-defs)
-        ;; working input excludes all keys not included in the form def,
-        ;; except those listed as required, which are all included
-        ;; TODO: is there a chance for error if an element not included
-        ;; in the def is listed as required?
-        working-input (-> input
-                          (select-keys (keys element-map))
-                          (remove-empty-keys)
-                          (merge-keys-nil required-inputs))
-        coerced (map-form-fn coerce working-input element-map context)
-        validations (map-form-fn validate-pass-nil working-input element-map)
-        error-data (reduce (fn [errs [k v]]
-                             (assoc errs k (cond
-                                             ;; Check that required vals are there
-                                             (and (nil? v) (contains? required-inputs k))
-                                             :invalid/required
-                                             ;; Check for invalid results
-                                             (invalid-result? v)
-                                             v
-                                             ;; Valid returns nil
-                                             :else-valid
-                                             nil))))
-        error-msgs (map-form-fn error-msg working-input element-map context)]
-    {:form/input input
-     :form/result validations
-     :form/error-data error-data
-     :form/error-msgs error-msgs
-     :form/valid? (every? nil? error-data)
-     :form/form-def form-def}))
+        required-inputs (set (:required-inputs form-def))
+        ;; Below returns a sequence of [key value opts] vectors
+        working-input (let [form-def-by-id (zipmap (map ::id input-defs) input-defs)
+                            defined-key-set (set (keys form-def-by-id))]
+                        (if (not (set/subset? required-inputs defined-key-set))
+                          (throw (ex-info "The provided required inputs are not completely defined in the form definition" form-def))
+                          (->> input
+                               (merge (zipmap defined-key-set (repeat nil)))
+                               (filter (comp defined-key-set first))
+                               (map (fn [[k v]] [k v (assoc (get form-def-by-id k) ::context context)])))))]
+    (reduce (fn [ret [k v opts]]
+              (let [coerced (coerce v opts)
+                    result (cond
+                             (and (nil? coerced) (required-inputs k))
+                             :invalid/required
+
+                             (invalid-result? coerced)
+                             coerced
+
+                             :else
+                             (validate coerced opts))
+                    valid? (not (invalid-result? result))
+                    err-msg (if (not valid?)
+                              (error-msg v result))]
+                (-> ret
+                    (update :form/result assoc k result)
+                    (update :form/error-data assoc k (if-not valid? result))
+                    (update :form/error-msg assoc k err-msg)
+                    (update :form/valid? #(and % valid?)))))
+            {:form/def form-def
+             :form/input input
+             :form/valid? true
+             :form/result {}
+             :form/error-data {}
+             :form/error-msg {}}
+            working-input)))
 
 
-;;----------------------------------------
-;; Base element definitions
+(defmacro try>
+  "Try to eval a form, return a pre-specified value on failure."
+  [form fail-val]
+  `(try ~form
+        (catch Throwable _# ~fail-val)))
 
 
-;; TODO: Do we actually need this function?
-(defmacro try-coerce
-  [body msg map]
-  `(try ~body
-        (catch #?(:clj Throwable :cljs js/Object) ex#
-          (throw (ex-info ~msg ~map ex#)))))
+(spec/def ::single-input ::input-element)
+
+(spec/def ::multi-input (spec/merge ::input-element
+                                    (spec/keys :req [::children])))
 
 
-(defelement ::text extends ::single-input
-  "This is a generic text input element. Blank strings coerce to nil."
-
-  (coerce [v e c] (try-coerce (let [s (clojure.string/trim (str v))]
-                                (if (clojure.string/blank? s)
-                                  nil
-                                  s))
-                              (str "Value of " (::id e) " could not be coerced to a string.")
-                              {:value v
-                               :element e
-                               :context c})))
+;; TODO: Is validation specification optional??
+(defelement ::text
+  :extends ::single-input
+  ;; Is the try even needed??
+  :coerce (fn [v _] (let [s (str/trim v)] (if-not (str/blank? s) s)))
+  :validate [(fn [v _] v)])
 
 
-(defn parse-num
-  [n]
-  #?(:clj
-     (Double/parseDouble n)
-     :cljs
-     (let [res (Number/parseFloat n)]
-       (if (= res ##NaN)
-         (throw (ex-info (str n " could not be parsed as a number")))))))
-
-
-(spec/def ::num-low number?)
-(spec/def ::num-high number?)
-
-
-(defelement ::num extends ::single-input
-  "An input that should be coerced to a number, with optional high/low values."
-
-  (coerce [v e c] (try (parse-num v)
-                       (catch #?(:clj Throwable :cljs js/Object) _
-                         :invalid/NaN)))
-
-  (validate [v e] (let [low (or (:num-low e) (Double/NEGATIVE_INFINITY))
-                        high (or (:num-high e) (Double/POSITIVE_INFINITY))]
-                    (cond
-                      (invalid-result? v) v
-                      (< v low) :invalid/too-low
-                      (< v high) :invalid/too-high
-                      :valid v)))
-
-  (error-msg [v e c] (let [validation (validate (coerce v e c) e)
-                           prompt (::prompt e)]
-                       (if (invalid-result? validation)
-                         (case validation
-                           :invalid/NaN      (str prompt " must be a number")
-                           :invalid/too-low  (str prompt " must be at least " (:num-low e))
-                           :invalid/too-high (str prompt " must be no greater than " (:num-high e))
-                           :invalid/invalid)
-                         ""))))
+(defelement ::num
+  :extends ::single-input
+  :coerce (fn [v _] (if (number? v) v (try> (Double/parseDouble v) :invalid/NaN)))
+  :validate [(fn [v {:keys [::num-max ::num-min]}]
+               (cond
+                 (and num-min (< v num-min)) :invalid/too-low
+                 (and num-max (> v num-max)) :invalid/too-high
+                 :else-valid v))]
+  :el-spec (spec/keys :opt [::max-val ::min-val]))
 
 
 (comment
-  (derive ::num ::single-input)
+  (def test-form-def
+    {:form-inputs [{::type ::text
+                    ::id ::a
+                    ::prompt "A"}
+                   {::id ::b
+                    ::type ::num
+                    ::prompt "B"}]
+     :required-inputs [::a ::b]})
 
-  (spec/def ::num (spec/merge ::input-element
-                              (spec/keys :opt-un [::num-low ::num-high]))))
-
-
-(comment (def text-el-test
-           {::id :text-el-test
-            ::type ::text
-            ::prompt "Test text element"
-            :tip "This is a test text element"})
-
-         (def num-el-test
-           {::id :num-el-test
-            ::type ::num
-            ::prompt "Test number element"
-            :tip "This is a test number element"
-            :num-low 0
-            :num-high 99})
-
-         (error-msg "abc" num-el-test ::default-context)
-         (error-msg "-4" num-el-test ::default-context)
-         (error-msg "100" num-el-test ::default-context)
-         (error-msg "7" num-el-test ::default-context))
+  (process-form {::a "Hi" ::b 2} test-form-def ::default-context))
 
 
+;;----------------------------------------
+;; Some useful helper functions
 
+(defn validator
+  "Helper function for making a compliant validator. Passes thru nil values.
+  Returns :invalid/invalid by default."
+  ([f] (validator f :invalid/invalid))
+  ([f kw]
+   (fn [v _]
+     (cond
+       (nil? v) v
+       (not (f v)) kw
+       :else v))))
+
+(defn re-validator
+  [re & kw]
+  (apply validator #(re-find re %) kw))
