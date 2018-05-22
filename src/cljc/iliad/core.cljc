@@ -1,4 +1,4 @@
-(ns iliad.core2
+(ns iliad.core
   (:require [clojure.spec.alpha :as spec]
             [clojure.string :as str]
             [clojure.set :as set]))
@@ -13,52 +13,26 @@
 (spec/def ::id keyword?)
 (spec/def ::type ::ns-kw)
 (spec/def ::prompt string?)
-(spec/def ::children (spec/nilable
-                      (spec/or :strings (spec/coll-of (spec/or :label string?
-                                                               :label+value (spec/tuple string? string?)))
-                               :elements (spec/coll-of ::input-element))))
+(spec/def ::children (spec/or :strings (spec/coll-of (spec/or :label string?
+                                                              :label+value (spec/tuple string? string?)))
+                              :elements (spec/coll-of ::input-element)))
 
 ;;Basic types: single-input (with text, num), title, group, multi-input
 ;; Actually, Non-input types such as titles should be input to the whole form
 ;; rendering function, no need to include them in the element list, eh?
 
-(comment
-  {:extends ;;previous type
-   :coerce ;; fn that coerces from a raw value, returns value or invalid kw
-   :validate ;; coll of fns that assume a coerced value and return either the value or an invalid-kw
-   :error-msg ;; coll of validation errors and fns that take invalid value and map of options to return an error message
-   :render ;; fn that takes an element and map of options, produces a string or data to render
-   :el-spec ;; keys required/optional in an element def of this type
-   }
-
-  (defelement ::text
-      :extends ::single-input
-      :coercion str)
-
-  (defelement ::num
-      :extends ::single-input
-      :coerce #(try (Double/parseDouble %1) (catch Throwable _ :invalid/NaN))
-      :validate [#(interval-val %1 %2)]
-      :error-msg [:invalid/NaN #(str %1 " is not a valid number.")]
-      :render #(str %1)
-      :el-spec [:opt [::max-val ::min-val]]))
-
-
-(defn dispatch-on-ks
-  [& ks]
-  (fn [_ m] ((apply juxt ks) m)))
-
 
 ;;----------------------------------------
 ;; Basic multimethods for writing/extendings elements/contexts.
 
-(defmulti coerce (dispatch-on-ks ::type ::context))
+(defmulti coerce (fn [_ m] ((juxt ::type ::context) m)))
 
 
 (defmulti validate (fn [_ opts] (::type opts)))
 
 
 (defn invalid-result?
+  "Returns true on a kw in the invalid ns or a coll of such keywords."
   [x]
   (let [invalid-kw? #(and (keyword? %)
                           (= "invalid" (namespace %)))]
@@ -132,7 +106,7 @@
   (spec/keys :req-un [::errors ::valid? ::value]))
 
 
-(defn merge-val-results
+(defn ^:private merge-val-results
   [res new]
   (let [is-valid (not (invalid-result? new))]
     (-> res
@@ -140,13 +114,13 @@
         (update :valid? (fnil #(and %1 is-valid) true)))))
 
 
-(defn lift-validation-fn
+(defn ^:private lift-validation-fn
   [f]
   (fn [res opts]
     (merge-val-results res (f (:value res) opts))))
 
 
-(defn do-validations
+(defn ^:private do-validations
   [fs v opts]
   (let [{:keys [value errors valid?]} (reduce #(%2 %1 opts)
                                               {:value v}
@@ -156,7 +130,7 @@
       errors)))
 
 
-(defn pred->validator
+(defn ^:private pred->validator
   [f invalid-kw]
   (fn [x]
     (if (f x)
@@ -184,7 +158,7 @@
   (spec/map-of #{:extends :coerce :validate :error-msg :render :el-spec} any?))
 
 
-(defn method-gen
+(defn ^:private method-gen
   [k v ename context]
   (case k
     :coerce `(defmethod coerce [~ename ~context]
@@ -327,7 +301,8 @@
 ;; Form data coercion and validation
 
 
-(defn coerce->validate
+(defn coerce+validate
+  "Used to coerce and validate a single value in one step."
   [v opts]
   (let [coerced (coerce v opts)]
     (if (invalid-result? coerced)
@@ -411,10 +386,10 @@
             working-input)))
 
 
-(defmacro try>
-  "Try to eval a form, return a pre-specified value on failure."
-  [form fail-val]
-  `(try ~form
+(defmacro ^:private try>
+  "Try to eval, return a pre-specified value on failure."
+  [body fail-val]
+  `(try ~body
         (catch Throwable _# ~fail-val)))
 
 

@@ -57,7 +57,7 @@
           {} opts))
 
 
-(defn bs4-input
+(defn ^:private bs4-input
   [id label attrs]
   (let [id (id->text id)
         attrs (assoc attrs :id id :name id)]
@@ -66,7 +66,7 @@
      [:input (merge {:type "text"} attrs)]]))
 
 
-(defn bs4-textarea
+(defn ^:private bs4-textarea
   [id label attrs]
   (let [id (id->text id)
         attrs (assoc attrs :id id :name id)]
@@ -75,7 +75,7 @@
      [:textarea (merge {:rows "3"} attrs)]]))
 
 
-(defn bs4-checkbox
+(defn ^:private bs4-checkbox
   [type id name label attrs]
   (assert #{:radio :checkbox} type)
   (let [id (id->text id)
@@ -88,7 +88,7 @@
      [:label.form-check-label {:for id} label]]))
 
 
-(defn bs4-checkboxes
+(defn ^:private bs4-checkboxes
   "Renders a group of checkboxes/radios. Takes as an optional fourth argument a
 function of [name label index] that determines the id of each checkbox. Defaults
 to appending the name with the index."
@@ -103,7 +103,7 @@ to appending the name with the index."
         (bs4-checkbox type (id-fn name label i) name label (assoc attrs :value val))))]))
 
 
-(defn bs4-select
+(defn ^:private bs4-select
   [id label attrs opts]
   (let [id (id->text id)
         attrs (assoc attrs :id id :name id)]

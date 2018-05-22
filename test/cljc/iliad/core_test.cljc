@@ -3,7 +3,7 @@
             #?(:clj [clojure.test :refer :all]
                :cljs [cljs.test :refer :all :include-macros true])))
 
-(deftest defelement
+#_(deftest defelement
   (testing "Macro produces correct code"
     (is (= (macroexpand-1 '(iliad.core/defelement ::text extends :iliad.core/single-input
                              "This is a generic text input element."
@@ -32,7 +32,7 @@
                (let [{:keys [::id ::prompt]} e] (html-input id prompt))))))))
 
 
-(deftest defcontext
+#_(deftest defcontext
   (testing "Macro produces correct code"
     (is (= (macroexpand-1 '(iliad.core/defcontext ::html extends :iliad.core/default-context
                              "A context for html forms."
