@@ -1,6 +1,6 @@
 (ns iliad.html
   (:require [clojure.set :as set]
-            [iliad.core2 :as iliad :refer [defelement defcontext]]
+            [iliad.core :as iliad :refer [defelement defcontext validator re-validator]]
             [hiccup.core :as hic]
             [clojure.string :as str]
             [clojure.spec.alpha :as spec]))
@@ -30,28 +30,9 @@
   :extends ::iliad/text
   :el-spec (spec/merge ::iliad/text (spec/keys :opt-un [::rows])))
 
-(defelement ::choose-one
-  "Multiple choice input with a single value, e.g. radio buttons."
-  :extends ::iliad/multi-input
-  :validate [(fn [v e]
-               (if (contains? (::iliad/children e) v)
-                 v
-                 :invalid/invalid-choice))])
+(defelement ::radio-group :extends ::iliad/choose-one)
 
-(defelement ::radio-group :extends ::choose-one)
-
-(defelement ::choose-many
-  "Checkbox input (multiple)."
-  :extends ::iliad/multi-input
-  :coerce (fn [v _] (if (sequential? v)
-                      (seq v)
-                      :invalid/not-seq))
-  :validate [(fn [v e]
-               (if (set/subset? (set v) (set (::iliad/children e)))
-                 v
-                 :invalid/invalid-choice))])
-
-(defelement ::checkbox-group :extends ::choose-many)
+(defelement ::checkbox-group :extends ::iliad/choose-many)
 
 
 (defn id->text

@@ -456,6 +456,26 @@
   (process-form {::a "Hi" ::b 2} test-form-def ::default-context))
 
 
+(defelement ::choose-one
+  "Multiple choice input with a single value, e.g. radio buttons."
+  :extends ::iliad/multi-input
+  :validate [(fn [v e]
+               (if (contains? (::iliad/children e) v)
+                 v
+                 :invalid/invalid-choice))])
+
+
+(defelement ::choose-many
+  "Checkbox input (multiple)."
+  :extends ::iliad/multi-input
+  :coerce (fn [v _] (if (sequential? v)
+                      (seq v)
+                      :invalid/not-seq))
+  :validate [(fn [v e]
+               (if (set/subset? (set v) (set (::iliad/children e)))
+                 v
+                 :invalid/invalid-choice))])
+
 ;;----------------------------------------
 ;; Some useful helper functions
 
