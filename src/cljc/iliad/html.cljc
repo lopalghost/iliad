@@ -6,7 +6,6 @@
             [clojure.spec.alpha :as spec]))
 
 
-
 (def zip-regex #"^\d{5}(-\d{4})?$")
 
 (defelement ::zip
@@ -230,19 +229,90 @@ to appending the name with the index."
   nil)
 
 
+(spec/def ::form-text-el
+  (spec/or :plain-text string?
+           :element (spec/and vector?
+                              (spec/cat :tag keyword?
+                                        :attrs (spec/? map?)
+                                        :content string?))))
+
+(spec/def ::fieldset
+  (spec/and vector?
+            (spec/cat :fs-title (spec/? string?)
+                      :fields (spec/+ (spec/alt :field ::iliad/ns-kw
+                                                :text  (spec/spec ::form-text-el))))))
+
+(spec/def ::render-structure
+  (spec/and vector?
+            (spec/cat :form-title (spec/? string?)
+                      :body (spec/+ (spec/alt :field    ::iliad/ns-kw
+                                              :text     (spec/spec ::form-text-el)
+                                              :fieldset (spec/spec ::fieldset))))))
+
+(def ^:private ^:dynamic *form-input-map*)
+(def ^:private ^:dynamic *form-render-context*)
+
+
+(defn ^:private emap
+  [f coll]
+  (doall (map f coll)))
+
+
+(defn render-form-element
+  [[tag body]]
+  (case tag
+    :form-title [:h1 body]
+
+    :body (emap render-form-element body)
+
+    :field (do (assert (map? *form-input-map*) "Don't forget to bind *form-input-map*!")
+               (iliad/render (*form-input-map* body)))
+
+    :text (render-form-element body)
+
+    :plain-text [:div body]
+
+    :element body
+
+    :fieldset [:fieldset {:class "form-group"} (emap render-form-element body)]
+
+    :fs-title [:legend body]
+
+    :fields (emap render-form-element body)))
+
+
+(comment
+  (def sample-form-structure
+    ["Please fill out this form."
+     ["About You"
+      ::name
+      ::age
+      "Please provide some more details below. We need to know as much about you as possible for reasons."
+      ::description
+      ::yes-no
+      ::adjectives]
+     ["Contact Information"
+      [:h3 "We sell this to everyone."]
+      ::email
+      ::phone
+      ::zip]]))
+
+
 (defn render-form-hiccup
-  [{:keys [form-inputs required-inputs]} {:keys [context action id] :as opts}]
+  [{:keys [form-inputs required-inputs structure]} {:keys [context action id] :as opts}]
   (let [required-inputs (set required-inputs)
         working-input (mapv #(if (required-inputs (::iliad/id %))
                                (assoc % :html/required true
                                       ::iliad/context context)
                                (assoc % ::iliad/context context))
                             form-inputs)
+        working-input-map (into {} (map (juxt ::iliad/id identity) working-input))
         form-opts (-> {:action action
                        :id id
                        :method "POST"}
                       (merge (attr-map opts)))]
-    [:form form-opts
-     (map iliad/render working-input)]))
+    (binding [*form-input-map* working-input-map]
+      [:form form-opts
+       (emap render-form-element (spec/conform ::render-structure structure))])))
 
 

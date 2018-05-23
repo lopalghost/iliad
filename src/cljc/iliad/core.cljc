@@ -120,7 +120,8 @@
     (merge-val-results res (f (:value res) opts))))
 
 
-(defn ^:private do-validations
+(defn do-validations
+  "Helper function for generating a single validator from a list of fns."
   [fs v opts]
   (let [{:keys [value errors valid?]} (reduce #(%2 %1 opts)
                                               {:value v}
@@ -433,21 +434,21 @@
 
 (defelement ::choose-one
   "Multiple choice input with a single value, e.g. radio buttons."
-  :extends ::iliad/multi-input
+  :extends ::multi-input
   :validate [(fn [v e]
-               (if (contains? (::iliad/children e) v)
+               (if (contains? (::children e) v)
                  v
                  :invalid/invalid-choice))])
 
 
 (defelement ::choose-many
   "Checkbox input (multiple)."
-  :extends ::iliad/multi-input
+  :extends ::multi-input
   :coerce (fn [v _] (if (sequential? v)
                       (seq v)
                       :invalid/not-seq))
   :validate [(fn [v e]
-               (if (set/subset? (set v) (set (::iliad/children e)))
+               (if (set/subset? (set v) (set (::children e)))
                  v
                  :invalid/invalid-choice))])
 
