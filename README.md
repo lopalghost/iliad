@@ -1,14 +1,14 @@
 # iliad
 
-A Clojure library designed to ... well, that part is up to you.
+A composable library for user input forms.
 
 ## Usage
 
-FIXME
+iliad is in the early stages and breaking changes are likely. Use at your own risk!
 
 ## License
 
-Copyright © 2018 FIXME
+Copyright © 201 G Nalven
 
 Distributed under the Eclipse Public License either version 1.0 or (at
 your option) any later version.
