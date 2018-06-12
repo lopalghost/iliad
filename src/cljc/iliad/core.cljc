@@ -346,6 +346,7 @@
                                     :form/valid? :form/def]))
 
 ;; This is slow. But too slow?
+;; TODO: still need to make a fn that returns a form validator
 (defn process-form
   [input form-def context]
   (let [input-defs (:form-inputs form-def)
@@ -403,7 +404,7 @@
 ;; TODO: Is validation specification optional??
 (defelement ::text
   :extends ::single-input
-  ;; Is the try even needed??
+  ;; Should the raw value be coerced to a string first?
   :coerce (fn [v _] (let [s (str/trim v)] (if-not (str/blank? s) s)))
   :validate [(fn [v _] v)])
 

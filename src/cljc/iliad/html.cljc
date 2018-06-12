@@ -62,7 +62,7 @@
         attrs (assoc attrs :id id :name id)]
     [:div.form-group
      [:label {:for id} label]
-     [:input (merge {:type "text"} attrs)]]))
+     [:input.form-control (merge {:type "text"} attrs)]]))
 
 
 (defn ^:private bs4-textarea
@@ -71,7 +71,7 @@
         attrs (assoc attrs :id id :name id)]
     [:div.form-group
      [:label {:for id} label]
-     [:textarea (merge {:rows "3"} attrs)]]))
+     [:textarea.form-control (merge {:rows "3"} attrs)]]))
 
 
 (defn ^:private bs4-checkbox
@@ -91,10 +91,11 @@
   "Renders a group of checkboxes/radios. Takes as an optional fourth argument a
 function of [name label index] that determines the id of each checkbox. Defaults
 to appending the name with the index."
-  ([type name attrs labels+values]
-   (bs4-checkboxes type name attrs (fn [n _ i] (str (id->text n) i)) labels+values))
-  ([type name attrs id-fn labels+values]
-   [:div
+  ([type prompt name attrs labels+values]
+   (bs4-checkboxes type prompt name attrs (fn [n _ i] (str (id->text n) i)) labels+values))
+  ([type prompt name attrs id-fn labels+values]
+   [:div.form-group
+    [:label prompt]
     (for [[l+v i] (map vector labels+values (range))]
       (let [vec? (vector? l+v)
             label (if vec? (first l+v) l+v)
@@ -108,7 +109,7 @@ to appending the name with the index."
         attrs (assoc attrs :id id :name id)]
     [:div.form-group
      [:label {:for id} label]
-     [:select attrs (for [opt opts]
+     [:select.form-control  attrs (for [opt opts]
                       [:option opt])]]))
 
 
@@ -165,17 +166,19 @@ to appending the name with the index."
 (defmethod bs4-renderer :checkbox-group
   [_ attrs]
   (fn [el]
-    (let [name (::iliad/id el)
-          opts (::iliad/children el)]
-      (bs4-checkboxes :checkbox name {} opts))))
+    (let [{name ::iliad/id
+           opts ::iliad/children
+           prompt ::iliad/prompt} el]
+      (bs4-checkboxes :checkbox prompt name {} opts))))
 
 
 (defmethod bs4-renderer :radio-group
   [_ attrs]
   (fn [el]
-    (let [name (::iliad/id el)
-          opts (::iliad/children el)]
-      (bs4-checkboxes :radio name {} opts))))
+    (let [{name ::iliad/id
+           opts ::iliad/children
+           prompt ::iliad/prompt} el]
+      (bs4-checkboxes :radio prompt name {} opts))))
 
 
 (defcontext ::hiccup-bs4
@@ -185,7 +188,7 @@ to appending the name with the index."
   :render [::iliad/text (bs4-renderer :input)
            ::iliad/num (bs4-renderer :input {:type "number"})
            ::phone (bs4-renderer :input {:type "tel"})
-           ::zip (bs4-renderer :input {:type "number" :html/pattern (str zip-regex)})
+           ::zip (bs4-renderer :input {:html/pattern (str zip-regex)})
            ::email (bs4-renderer :input {:type "email"})
            ::textarea (bs4-renderer :textarea)
            ::radio-group (bs4-renderer :radio-group)
