@@ -405,7 +405,9 @@
 (defelement ::text
   :extends ::single-input
   ;; Should the raw value be coerced to a string first?
-  :coerce (fn [v _] (let [s (str/trim v)] (if-not (str/blank? s) s)))
+  :coerce (fn [v _] (if (nil? v)
+                      v
+                      (let [s (str/trim v)] (if-not (str/blank? s) s))))
   :validate [(fn [v _] v)])
 
 
@@ -433,6 +435,7 @@
   (process-form {::a "Hi" ::b 2} test-form-def ::default-context))
 
 
+;; TODO: These base elements need to implement all methods
 (defelement ::choose-one
   "Multiple choice input with a single value, e.g. radio buttons."
   :extends ::multi-input
